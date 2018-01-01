@@ -1,4 +1,3 @@
-
 #ifndef ASC_HPP
 #define ASC_HPP
 
