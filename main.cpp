@@ -1,4 +1,3 @@
-
 #include "ASC.hpp"
 
 int main()
