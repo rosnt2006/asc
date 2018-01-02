@@ -1,21 +1,25 @@
 #ifndef MODEL_HPP
 #define MODEL_HPP
 
+#include <cassert>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <type_traits>
 
+#define isBinaryUnsignedIntegerType(typeName) \
+  static_assert(std::numeric_limits<typeName>::radix == 2); \
+  static_assert(std::is_unsigned<typeName>::value); \
+  static_assert(std::is_integral<typeName>::value);
+
 namespace asc
 {
-template <typename Small = uint8_t, typename Big = uint64_t>
+template <typename Big = uint64_t, typename Small = uint8_t>
 class Model
 {
 private:
-  static_assert(std::is_unsigned<Small>::value);
-  static_assert(std::is_unsigned<Big>::value);
-  static_assert(std::numeric_limits<Small>::radix == 2);
-  static_assert(std::numeric_limits<Big>::radix == 2);
+  isBinaryUnsignedIntegerType(Small);
+  isBinaryUnsignedIntegerType(Big);
 
   class Blob
   {
@@ -26,21 +30,27 @@ private:
     static const Big POS_INF = M_1 >> 1;
     static const Big NEG_INF = ~POS_INF;
 
-    static const Big* NONE = &M_0;
-    static const Big* ALL = &M_1;
+    static const Big* NONE;
+    static const Big* ALL;
 
     static const Small S_SZ = std::numeric_limits<Small>::digits;
     static const Small B_SZ = std::numeric_limits<Big>::digits;
 
-    static template<Big b> Small log() {return 1 + log<b>>1>();}
-    static template<> Small log<1>() {return 0;}
-    static const Small S_SZ_LOG = log<S_SZ>();
-    static const Small B_SZ_LOG = log<B_SZ>();
+    template <Small i, bool dummy = false>
+    struct log2 {static const Small value = 1 + log2<(i >> 1)>::value;};
+    template <bool dummy>
+    struct log2<1, dummy> {static const Small value = 0;};
+
+    static const Small S_SZ_LOG = log2<S_SZ>::value;
+    static const Small B_SZ_LOG = log2<B_SZ>::value;
     static const Small BS_SZ_LOG = B_SZ_LOG - S_SZ_LOG;
 
-    static template<Big b> Big modMsk() {return b | modMsk<b>>1>();}
-    static template<> Big modMsk<0>() {return 0;}
-    static const Big B_SZ_MOD_MSK = modMsk<B_SZ_LOG>>1>();
+    template <Small i, bool dummy = false>
+    struct mod2msk {static const Small value = i | mod2msk<(i >> 1)>::value;};
+    template <bool dummy>
+    struct mod2msk<0, dummy> {static const Small value = 0;};
+
+    static const Small B_SZ_MOD_MSK = mod2msk<(B_SZ_LOG >> 1)>::value;
 
     static Big quo(const Big b) {return b >> B_SZ_LOG;}
     static Big mod(const Big b) {return B_SZ_MOD_MSK & b;}
@@ -66,7 +76,7 @@ private:
     {
       assert(isEmpty() && bo.isAllocated());
       const Big boSize = 2 + bo.size();
-      Big* newBo = b = new Big[boSize];
+      Big* newBo = (Big*)(b = new Big[boSize]);
       memcpy((void*)newBo, (void*)bo.data(), boSize << BS_SZ_LOG);
     }
 
@@ -76,8 +86,8 @@ private:
     void set(const Blob b0, const Blob b1)
     {
       assert(isEmpty());
-      if (b0.isFull() || b1.isFull()) return b = ALL, {};
-      if (b0.isEmpty() && b1.isEmpty()) return b = NONE, {};
+      if (b0.isFull() || b1.isFull()) return b = ALL, void();
+      if (b0.isEmpty() && b1.isEmpty()) return b = NONE, void();
       if (b0.isEmpty()) return set(b1);
       if (b1.isEmpty()) return set(b0);
       Big begin0 = b0.begin();
@@ -90,7 +100,7 @@ private:
       if (cmp(end0, end1)) std::swap(end0, end1);
       const bool overlap = cmp(begin1, end1);
       const Big size = end0 - begin0;
-      Big* bo = b = new Big[size + 2];
+      Big* bo = (Big*)(b = new Big[size + 2]);
       *bo = begin0, *++bo = size, ++bo;
       const Big* end = bo0 + ((overlap ? begin1 : end1) - begin0);
       for (; bo0 < end; *bo = *bo0, ++bo, ++bo0);
@@ -112,8 +122,8 @@ private:
       for (; bo0 < end && *bo0 == *bo1; ++bo0, ++bo1);
       return bo0 < end ? *bo0 < *bo1 ? INC : DEC : EQ;
     }
-    template<bool force = false>
-    bool contradicts(const Blob b, Blob& error) const
+    template <bool force = false>
+    bool contradicts(const Blob b, Big& error) const
     {
       if (isEmpty() || b.isEmpty()) return false;
       if (isFull() && b.isFull()) return error = NEG_INF, true;
@@ -135,7 +145,7 @@ private:
       for (; bo0 < end && !(bo = *bo0 & *bo1); ++bo0, ++bo1);
       return bo ? (error = invDiv(end1 + (bo0 - end), bo), true) : false;
     }
-    template<bool drop = false>
+    template <bool drop = false>
     void shift()
     {
       if (!isAllocated()) return;
@@ -186,9 +196,10 @@ private:
   Blob bs[N_BLOBS];
 
 public:
+  typedef Big VariableId;
   Model // atomic formula (x<y), 'necessarily' referencing current scope
   (
-    const Big varId, // variable ID (index based on current scope, whose ID is 0)
+    const VariableId varId, // index based on current scope, whose ID is 0
     const bool isMember, // is 'varId' the 'left-hand-side' of the atomic formula
     const bool isUscope, // is current scope 'universally' quantified
     const bool isUvar, // is 'varId' an 'universally' quantified variable
@@ -198,26 +209,27 @@ public:
     isUscope ? isUvar ?            bs[isNeg ? unu : uu].set()
                       : isMember ? bs[isNeg ? Enu : Eu].set(varId)
                                  : bs[isNeg ? unE : uE].set(varId)
-             : isUvar ? isMember : bs[isNeg ? Une : Ue].set(0)
+             : isUvar ? isMember ? bs[isNeg ? Une : Ue].set(0)
                                  : bs[isNeg ? enU : eU].set(0)
                       : isMember ? bs[isNeg ? Ene : Ee].set(varId)
                                  : bs[isNeg ? enE : eE].set(varId);
   }
   Model(const Model& m0, const Model& m1) // binary operator
   {
-    Blob *bo = bs, *end = bo + N_BLOBS, *bo0 = m0.bs, *bo1 = m1.bs;
+    Blob *bo = bs, *end = bo + N_BLOBS;
+    const Blob *bo0 = m0.bs, *bo1 = m1.bs;
     for (; bo < end; bo->set(*bo0, *bo1), ++bo, ++bo0, ++bo1);
   }
   bool cmp(const Model& m) const
   {
-    Blob::Order o = Blob::EQ;
-    Blob *bo0 = bs, *end = bo0 + N_BLOBS, *bo1 = m.bs;
-    for (; bo0 < end && o == Blob::EQ; o = bo0->cmp(*bo1), ++bo0, ++bo1);
-    return o == Blob::INC;
+    auto order = Blob::EQ;
+    const Blob *bo0 = bs, *end = bo0 + N_BLOBS, *bo1 = m.bs;
+    for (; bo0 < end && order == Blob::EQ; order = bo0->cmp(*bo1), ++bo0, ++bo1);
+    return order == Blob::INC;
   }
-  bool contradicts(const Model& m, Big* retError = nullptr) const
+  bool contradicts(const Model& m, VariableId* varId = nullptr) const
   {
-    Big dummy, &error = retError ? *retError : dummy;
+    Big dummy, &error = varId ? *varId : dummy;
     return bs[uu].contradicts(m.bs[unu], error) ||
            bs[uu].contradicts(m.bs[enu], error) ||
            bs[uu].contradicts(m.bs[une], error) ||
@@ -230,11 +242,11 @@ public:
            bs[unu].contradicts(m.bs[Ee], error) ||
            bs[unu].contradicts(m.bs[eE], error) ||
 
-           bs[eu].contradicts<true>(m.bs[une], error) ||
-           bs[ue].contradicts<true>(m.bs[enu], error) ||
+           bs[eu].template contradicts<true>(m.bs[une], error) ||
+           bs[ue].template contradicts<true>(m.bs[enu], error) ||
 
-           bs[enu].contradicts<true>(m.bs[ue], error) ||
-           bs[une].contradicts<true>(m.bs[eu], error) ||
+           bs[enu].template contradicts<true>(m.bs[ue], error) ||
+           bs[une].template contradicts<true>(m.bs[eu], error) ||
 
            bs[eu].contradicts(m.bs[enE], error) ||
            bs[eu].contradicts(m.bs[enu], error) ||
@@ -254,12 +266,17 @@ public:
   }
   void close()
   {
-    for (Blob *b = bs, *end = bs + N_E; b < end; b->shift<true>(), ++b);
+    for (Blob *b = bs, *end = bs + N_E; b < end; b->template shift<true>(), ++b);
     for (Blob *b = bs + N_E, *end = bs + N_BLOBS; b < end; b->shift(), ++b);
   }
   void clear() {for (Blob *b = bs, *end = b + N_BLOBS; b < end; b->clear(), ++b);}
 };
-bool operator<(const Model& m0, const Model& m1) {return m0.cmp(m1);}
+template <typename B, typename S>
+const B* Model<B, S>::Blob::NONE = &M_0;
+template <typename B, typename S>
+const B* Model<B, S>::Blob::ALL = &M_1;
+template <typename B, typename S>
+bool operator<(const Model<B, S>& m0, const Model<B, S>& m1) {return m0.cmp(m1);}
 }
 
 #endif

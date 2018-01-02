@@ -16,22 +16,22 @@ namespace asc
 {
 using std::string;
 using std::vector;
-template <typename Small = uint8_t, typename Big = uint64_t>
 class ASC
 {
 private:
-  using Model = asc::Model<Small, Big>;
-  using ExprModel = set<Model>;
+  using Model = asc::Model<>;
+  using ExprModel = std::set<Model>;
   using ModelStk = vector<ExprModel>;
-  using NameToId = std::map<string, Big>;
+  using uint = Model::VariableId;
+  using NameToId = std::map<string, uint>;
   using Context = vector<NameToId::value_type>;
-  using SynStk = vector<Big>;
+  using SynStk = vector<uint>;
   using SemStk = vector<bool>;
   using CondVar = std::condition_variable;
   using Mutex = std::mutex;
   using Lock = std::unique_lock<Mutex>;
   
-  static const Big N_WORKERS = 8;
+  static const uint N_WORKERS = 8;
 
   ModelStk modelStk;
   ExprModel exprModel;
@@ -41,10 +41,10 @@ private:
   SemStk semStk;
   CondVar idle;
   Mutex mutex;
-  Big idleWorkers = N_WORKERS;
+  uint idleWorkers = N_WORKERS;
 
   bool hasUnivScope() const {return !semStk.empty() && semStk.back();}
-  bool hasUnivVar(const Big varId) const {return semStk[semStk.size() - 1 - varId];}
+  bool hasUnivVar(const uint varId) const {return semStk[semStk.size() - 1 - varId];}
   bool hasNegScope() const {return hasUnivScope() ^ 1 & synStk.back();}
 
   void process(std::function<void()>&& f)
@@ -72,25 +72,26 @@ private:
       idle.notify_one();
     }
   }
-  template<bool take = false>
+  template <bool take = false>
   void pop()
   {
-    for (auto& m : modelStk.back()) take ? exprModel.insert(m) : m.clear();
+    if (take) for (auto& m : modelStk.back()) exprModel.insert(m);
+    else for (auto& m : modelStk.back()) ((Model&)m).clear();
     modelStk.pop_back();
   }
   void saveContext(const string& varName)
   {
-    Big& varId = varIds[varName];
+    uint& varId = varIds[varName];
     context.push_back(std::make_pair(varName, varId));
     varId = semStk.size();
   }
   void restoreContext()
   {
-    Big& varId = varIds[context.back().first];
+    uint& varId = varIds[context.back().first];
     varId = context.back().second;
     context.pop_back();
   }
-  void push(const Big varId, const bool isMember)
+  void push(const uint varId, const bool isMember)
   {
     assert(!semStk.empty() && varId < semStk.size());
     const bool isUscope = hasUnivScope();
@@ -114,7 +115,7 @@ private:
       }
       for (; !synStk.back() && !semStk.empty() && !modelStk.empty(); done = false)
       {
-        for (auto& m : modelStk.back()) process([&]{m.close();});
+        for (auto& m : modelStk.back()) process([&]{((Model&)m).close();});
         joinWorkers();
         synStk.pop_back(), semStk.pop_back();
         restoreContext();
