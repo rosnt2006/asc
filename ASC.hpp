@@ -30,7 +30,7 @@ private:
   using CondVar = std::condition_variable;
   using Mutex = std::mutex;
   using Lock = std::unique_lock<Mutex>;
-  
+
   static const uint N_WORKERS = 8;
 
   ModelStk modelStk;
@@ -45,14 +45,14 @@ private:
 
   bool hasUnivScope() const {return !semStk.empty() && semStk.back();}
   bool hasUnivVar(const uint varId) const {return semStk[semStk.size() - 1 - varId];}
-  bool hasNegScope() const {return hasUnivScope() ^ 1 & synStk.back();}
+  bool hasNegScope() const {return hasUnivScope() ^ (1 & synStk.back());}
 
   void process(std::function<void()>&& f)
   {
     Lock l(mutex);
     idle.wait(l, [&]{return idleWorkers > 0;});
-    std::thread(f).detach();
     --idleWorkers;
+    std::thread(f).detach();
   }
   void joinWorkers()
   {
@@ -72,23 +72,16 @@ private:
       idle.notify_one();
     }
   }
-  template <bool take = false>
-  void pop()
-  {
-    if (take) for (auto& m : modelStk.back()) exprModel.insert(m);
-    else for (auto& m : modelStk.back()) ((Model&)m).clear();
-    modelStk.pop_back();
-  }
   void saveContext(const string& varName)
   {
     uint& varId = varIds[varName];
-    context.push_back(std::make_pair(varName, varId));
+    context.emplace_back(varName, varId);
     varId = semStk.size();
   }
   void restoreContext()
   {
-    uint& varId = varIds[context.back().first];
-    varId = context.back().second;
+    auto& savedContext = context.back();
+    varIds[savedContext.first] = savedContext.second;
     context.pop_back();
   }
   void push(const uint varId, const bool isMember)
@@ -97,8 +90,9 @@ private:
     const bool isUscope = hasUnivScope();
     const bool isUvar = hasUnivVar(varId);
     const bool isNeg = hasNegScope();
-    modelStk.push_back(ExprModel{Model{varId, isMember, isUscope, isUvar, isNeg}});
-    for (bool done = false; done = !done; )
+    modelStk.emplace_back();
+    modelStk.back().emplace(varId, isMember, isUscope, isUvar, isNeg);
+    for (bool done = false; (done = !done); )
     {
       for (; synStk.back() && modelStk.size() > 1; --synStk.back(), done = false)
       {
@@ -108,10 +102,17 @@ private:
             for (auto& m1 : modelStk.back())
               process([&]{combine(m0, m1);});
           joinWorkers();
-          pop(), pop();
+          for (auto& m : modelStk.back()) ((Model&)m).clear();
+          modelStk.pop_back();
+          for (auto& m : modelStk.back()) ((Model&)m).clear();
+          modelStk.back().clear(), modelStk.back().swap(exprModel);
         }
-        else pop<true>(), pop<true>();
-        modelStk.push_back(ExprModel{}), modelStk.back().swap(exprModel);
+        else
+        {
+          auto& exprModel = modelStk[modelStk.size() - 2];
+          for (auto& m : modelStk.back()) exprModel.insert(m);
+          modelStk.pop_back();
+        }
       }
       for (; !synStk.back() && !semStk.empty() && !modelStk.empty(); done = false)
       {
@@ -124,7 +125,7 @@ private:
   }
 
 public:
-  void push() {++synStk.back();}
+  void push(const uint numOperators = 1) {synStk.back() += numOperators;}
   void push(const string& varName)
   {
     semStk.push_back(hasNegScope()), synStk.push_back(0);

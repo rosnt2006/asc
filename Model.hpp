@@ -6,11 +6,12 @@
 #include <cstring>
 #include <limits>
 #include <type_traits>
+#include <utility>
 
 #define isBinaryUnsignedIntegerType(typeName) \
-  static_assert(std::numeric_limits<typeName>::radix == 2); \
-  static_assert(std::is_unsigned<typeName>::value); \
-  static_assert(std::is_integral<typeName>::value);
+  static_assert(std::numeric_limits<typeName>::radix == 2, ""); \
+  static_assert(std::is_unsigned<typeName>::value, ""); \
+  static_assert(std::is_integral<typeName>::value, "");
 
 namespace asc
 {
@@ -18,8 +19,8 @@ template <typename Big = uint64_t, typename Small = uint8_t>
 class Model
 {
 private:
-  isBinaryUnsignedIntegerType(Small);
-  isBinaryUnsignedIntegerType(Big);
+  isBinaryUnsignedIntegerType(Small)
+  isBinaryUnsignedIntegerType(Big)
 
   class Blob
   {
@@ -227,9 +228,9 @@ public:
     for (; bo0 < end && order == Blob::EQ; order = bo0->cmp(*bo1), ++bo0, ++bo1);
     return order == Blob::INC;
   }
-  bool contradicts(const Model& m, VariableId* varId = nullptr) const
+  bool contradicts(const Model& m) const
   {
-    Big dummy, &error = varId ? *varId : dummy;
+    Big error;
     return bs[uu].contradicts(m.bs[unu], error) ||
            bs[uu].contradicts(m.bs[enu], error) ||
            bs[uu].contradicts(m.bs[une], error) ||
