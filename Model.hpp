@@ -61,8 +61,8 @@ private:
       for (quo <<= B_SZ_LOG; modFlg && !(1 & modFlg); modFlg >>= 1, ++quo);
       return quo;
     }
-    static Big sgnd(const Big i) {return i + NEG_INF;}
-    static bool cmp(const Big b0, const Big b1) {return sgnd(b0) < sgnd(b1);}
+    using Sgnd = std::make_signed<Big>::type;
+    static bool sgndCmp(const Big b0, const Big b1) {return (Sgnd)b0 < (Sgnd)b1;}
 
     const Big* b = NONE;
 
@@ -97,9 +97,9 @@ private:
       Big end1 = begin1 + b1.size();
       const Big* bo0 = b0.data();
       const Big* bo1 = b1.data();
-      if (cmp(begin1, begin0)) std::swap(begin0, begin1), std::swap(bo0, bo1);
-      if (cmp(end0, end1)) std::swap(end0, end1);
-      const bool overlap = cmp(begin1, end1);
+      if (sgndCmp(begin1, begin0)) std::swap(begin0, begin1), std::swap(bo0, bo1);
+      if (sgndCmp(end0, end1)) std::swap(end0, end1);
+      const bool overlap = sgndCmp(begin1, end1);
       const Big size = end0 - begin0;
       Big* bo = (Big*)(b = new Big[size + 2]);
       *bo = begin0, *++bo = size, ++bo;
@@ -117,7 +117,7 @@ private:
       if (b.isEmpty()) return isEmpty() ? EQ : DEC;
       if (isFull()) return b.isFull() ? EQ : DEC;
       if (b.isFull()) return isFull() ? EQ : INC;
-      if (begin() != b.begin()) return cmp(begin(), b.begin()) ? INC : DEC;
+      if (begin() != b.begin()) return sgndCmp(begin(), b.begin()) ? INC : DEC;
       if (size() != b.size()) return size() < b.size() ? INC : DEC;
       const Big *bo0 = data(), *end = bo0 + size(), *bo1 = b.data();
       for (; bo0 < end && *bo0 == *bo1; ++bo0, ++bo1);
@@ -136,9 +136,9 @@ private:
       Big end1 = begin1 + b.size();
       const Big* bo0 = data();
       const Big* bo1 = b.data();
-      if (cmp(begin1, begin0)) std::swap(begin0, begin1), std::swap(bo0, bo1);
-      if (cmp(end0, end1)) std::swap(end0, end1);
-      const bool overlap = cmp(begin1, end1);
+      if (sgndCmp(begin1, begin0)) std::swap(begin0, begin1), std::swap(bo0, bo1);
+      if (sgndCmp(end0, end1)) std::swap(end0, end1);
+      const bool overlap = sgndCmp(begin1, end1);
       if (!overlap) return false;
       bo0 += begin1 - begin0;
       const Big* end = bo0 + (end1 - begin1);
@@ -146,11 +146,10 @@ private:
       for (; bo0 < end && !(bo = *bo0 & *bo1); ++bo0, ++bo1);
       return bo ? (error = invDiv(end1 + (bo0 - end), bo), true) : false;
     }
-    template <bool drop = false>
     void shift()
     {
       if (!isAllocated()) return;
-      const bool leak = !drop && 1 & *data();
+      const bool leak = 1 & *data();
       const bool grow = leak && *(data() + size() - 1) != 1;
       Big *newB = grow ? new Big[size() + 3] : (Big*)b, *nbo = newB;
       *nbo = begin() - leak, *++nbo = size() + grow;
@@ -170,29 +169,28 @@ private:
   enum BlobType : Small
   {
     // 'E' stands for 'existential' quantifier
-    // 'V' stands for 'universal' quantifier
+    // 'U' stands for 'universal' quantifier
     // '<' stands for 'membership' predicate
-    eE       , // Ex..Ey(y<x)
+    eE       , // Ex..Ey (y<x)
     enE      , // Ex..Ey!(y<x)
     Ee       , // Ex..Ey (x<y)
     Ene      , // Ex..Ey!(x<y)
-    N_E      , // number of 'existential' blob types
-    ue  = N_E,
+    ue       ,
     une      ,
     eu       ,
     enu      ,
-    uu       , // Vx..Vy (x<y)
-    unu      , // Vx..Vy!(x<y)
+    uu       , // Ux..Uy (x<y)
+    unu      , // Ux..Uy!(x<y)
     N_BLOBS  , // number of blob types
     // aliases
-    uE  =  ue, // Ex..Vy (y<x)
-    unE = une, // Ex..Vy!(y<x)
-    Eu  =  eu, // Ex..Vy (x<y)
-    Enu = enu, // Ex..Vy!(x<y)
-    eU  =  eu, // Vx..Ey (y<x)
-    enU = enu, // Vx..Ey!(y<x)
-    Ue  =  ue, // Vx..Ey (x<y)
-    Une = une, // Vx..Ey!(x<y)
+    uE  =  ue, // Ex..Uy (y<x)
+    unE = une, // Ex..Uy!(y<x)
+    Eu  =  eu, // Ex..Uy (x<y)
+    Enu = enu, // Ex..Uy!(x<y)
+    eU  =  eu, // Ux..Ey (y<x)
+    enU = enu, // Ux..Ey!(y<x)
+    Ue  =  ue, // Ux..Ey (x<y)
+    Une = une, // Ux..Ey!(x<y)
   };
   Blob bs[N_BLOBS];
 
@@ -267,8 +265,7 @@ public:
   }
   void close()
   {
-    for (Blob *b = bs, *end = bs + N_E; b < end; b->template shift<true>(), ++b);
-    for (Blob *b = bs + N_E, *end = bs + N_BLOBS; b < end; b->shift(), ++b);
+    for (Blob *b = bs, *end = bs + N_BLOBS; b < end; b->shift(), ++b);
   }
   void clear() {for (Blob *b = bs, *end = b + N_BLOBS; b < end; b->clear(), ++b);}
 };
