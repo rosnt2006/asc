@@ -1,2 +1,2 @@
-# asc
-axiomatic set calculator
+# xcc
+axiomatic classs calculator

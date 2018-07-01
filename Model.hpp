@@ -1,280 +1,119 @@
-#ifndef MODEL_HPP
-#define MODEL_HPP
+#ifndef XC_MODEL_HPP
+#define XC_MODEL_HPP
 
-#include <cassert>
-#include <cstdint>
-#include <cstring>
-#include <limits>
-#include <type_traits>
-#include <utility>
+#include "cloud.hpp"
 
-#define isBinaryUnsignedIntegerType(typeName) \
-  static_assert(std::numeric_limits<typeName>::radix == 2, ""); \
-  static_assert(std::is_unsigned<typeName>::value, ""); \
-  static_assert(std::is_integral<typeName>::value, "");
-
-namespace asc
+namespace xc
 {
-template <typename Big = uint64_t, typename Small = uint8_t>
-class Model
+template <typename uint>
+class model
 {
-private:
-  isBinaryUnsignedIntegerType(Small)
-  isBinaryUnsignedIntegerType(Big)
-
-  class Blob
+  enum Type
   {
-  private:
-    static const Big M_0 = 0;
-    static const Big M_1 = ~M_0;
-
-    static const Big POS_INF = M_1 >> 1;
-    static const Big NEG_INF = ~POS_INF;
-
-    static const Big* NONE;
-    static const Big* ALL;
-
-    static const Small S_SZ = std::numeric_limits<Small>::digits;
-    static const Small B_SZ = std::numeric_limits<Big>::digits;
-
-    template <Small i, bool dummy = false>
-    struct log2 {static const Small value = 1 + log2<(i >> 1)>::value;};
-    template <bool dummy>
-    struct log2<1, dummy> {static const Small value = 0;};
-
-    static const Small S_SZ_LOG = log2<S_SZ>::value;
-    static const Small B_SZ_LOG = log2<B_SZ>::value;
-    static const Small BS_SZ_LOG = B_SZ_LOG - S_SZ_LOG;
-
-    template <Small i, bool dummy = false>
-    struct mod2msk {static const Small value = i | mod2msk<(i >> 1)>::value;};
-    template <bool dummy>
-    struct mod2msk<0, dummy> {static const Small value = 0;};
-
-    static const Small B_SZ_MOD_MSK = mod2msk<(B_SZ_LOG >> 1)>::value;
-
-    static Big quo(const Big b) {return b >> B_SZ_LOG;}
-    static Big mod(const Big b) {return B_SZ_MOD_MSK & b;}
-    static Big modFlg(const Big b) {return 1 << mod(b);}
-    static Big invDiv(Big quo, Big modFlg)
-    {
-      for (quo <<= B_SZ_LOG; modFlg && !(1 & modFlg); modFlg >>= 1, ++quo);
-      return quo;
-    }
-    using Sgnd = std::make_signed<Big>::type;
-    static bool sgndCmp(const Big b0, const Big b1) {return (Sgnd)b0 < (Sgnd)b1;}
-
-    const Big* b = NONE;
-
-    bool isEmpty() const {return b == NONE;}
-    bool isFull() const {return b == ALL;}
-    bool isAllocated() const {return !isEmpty() && !isFull();}
-    Big begin() const {assert(isAllocated()); return b[0];}
-    Big size() const {assert(isAllocated()); return b[1];}
-    const Big* data() const {assert(isAllocated()); return b + 2;}
-
-    void set(const Blob bo)
-    {
-      assert(isEmpty() && bo.isAllocated());
-      const Big boSize = 2 + bo.size();
-      Big* newBo = (Big*)(b = new Big[boSize]);
-      memcpy((void*)newBo, (void*)bo.data(), boSize << BS_SZ_LOG);
-    }
-
-  public:
-    void set() {assert(isEmpty()); b = ALL;}
-    void set(const Big i) {assert(isEmpty()); b = new Big[3]{quo(i), 1, modFlg(i)};}
-    void set(const Blob b0, const Blob b1)
-    {
-      assert(isEmpty());
-      if (b0.isFull() || b1.isFull()) return b = ALL, void();
-      if (b0.isEmpty() && b1.isEmpty()) return b = NONE, void();
-      if (b0.isEmpty()) return set(b1);
-      if (b1.isEmpty()) return set(b0);
-      Big begin0 = b0.begin();
-      Big begin1 = b1.begin();
-      Big end0 = begin0 + b0.size();
-      Big end1 = begin1 + b1.size();
-      const Big* bo0 = b0.data();
-      const Big* bo1 = b1.data();
-      if (sgndCmp(begin1, begin0)) std::swap(begin0, begin1), std::swap(bo0, bo1);
-      if (sgndCmp(end0, end1)) std::swap(end0, end1);
-      const bool overlap = sgndCmp(begin1, end1);
-      const Big size = end0 - begin0;
-      Big* bo = (Big*)(b = new Big[size + 2]);
-      *bo = begin0, *++bo = size, ++bo;
-      const Big* end = bo0 + ((overlap ? begin1 : end1) - begin0);
-      for (; bo0 < end; *bo = *bo0, ++bo, ++bo0);
-      end = overlap ? bo1 + (end1 - begin1) : bo1;
-      for (; bo1 < end; *bo = *bo0 | *bo1, ++bo, ++bo0, ++bo1);
-      for (end = overlap ? bo : bo + (begin1 - end1); bo < end; *bo = 0, ++bo);
-      for (end = data() + size; bo < end; *bo = *bo1, ++bo, ++bo1);
-    }
-    enum Order : Small {INC, DEC, EQ};
-    Order cmp(const Blob b) const
-    {
-      if (isEmpty()) return b.isEmpty() ? EQ : INC;
-      if (b.isEmpty()) return isEmpty() ? EQ : DEC;
-      if (isFull()) return b.isFull() ? EQ : DEC;
-      if (b.isFull()) return isFull() ? EQ : INC;
-      if (begin() != b.begin()) return sgndCmp(begin(), b.begin()) ? INC : DEC;
-      if (size() != b.size()) return size() < b.size() ? INC : DEC;
-      const Big *bo0 = data(), *end = bo0 + size(), *bo1 = b.data();
-      for (; bo0 < end && *bo0 == *bo1; ++bo0, ++bo1);
-      return bo0 < end ? *bo0 < *bo1 ? INC : DEC : EQ;
-    }
-    template <bool force = false>
-    bool contradicts(const Blob b, Big& error) const
-    {
-      if (isEmpty() || b.isEmpty()) return false;
-      if (isFull() && b.isFull()) return error = NEG_INF, true;
-      if (isFull()) return error = invDiv(b.begin(), *b.data()), true;
-      if (b.isFull() || force) return error = invDiv(begin(), *data()), true;
-      Big begin0 = begin();
-      Big begin1 = b.begin();
-      Big end0 = begin0 + size();
-      Big end1 = begin1 + b.size();
-      const Big* bo0 = data();
-      const Big* bo1 = b.data();
-      if (sgndCmp(begin1, begin0)) std::swap(begin0, begin1), std::swap(bo0, bo1);
-      if (sgndCmp(end0, end1)) std::swap(end0, end1);
-      const bool overlap = sgndCmp(begin1, end1);
-      if (!overlap) return false;
-      bo0 += begin1 - begin0;
-      const Big* end = bo0 + (end1 - begin1);
-      Big bo = 0;
-      for (; bo0 < end && !(bo = *bo0 & *bo1); ++bo0, ++bo1);
-      return bo ? (error = invDiv(end1 + (bo0 - end), bo), true) : false;
-    }
-    void shift()
-    {
-      if (!isAllocated()) return;
-      const bool leak = 1 & *data();
-      const bool grow = leak && *(data() + size() - 1) != 1;
-      Big *newB = grow ? new Big[size() + 3] : (Big*)b, *nbo = newB;
-      *nbo = begin() - leak, *++nbo = size() + grow;
-      const Big *bo = data(), *end = nbo + 1 + *nbo;
-      if (leak) *++nbo = *bo << B_SZ_MOD_MSK;
-      *++nbo = *bo >> 1;
-      for (Big* nnbo = nbo + 1; nnbo < end; ++nbo, ++nnbo)
-      {
-        *nbo |= *++bo << B_SZ_MOD_MSK;
-        *nnbo = *bo >> 1;
-      }
-      delete[] b, b = newB;
-    }
-    void clear() {if (isAllocated()) delete[] b; b = NONE;}
+    A, // analysis
+    S, // synthesis
+    R, // root
+    B, // branch
+    V, // vacuum
+    U, // universe
+    D, // dark
+    M, // multiverse
+    NEGATION_OFFSET,
+    N_TYPES = NEGATION_OFFSET << 1,
   };
+  friend constexpr Type operator!(const Type m) {return m + NEGATION_OFFSET;}
 
-  enum BlobType : Small
+  using dim = cloud<uint>;
+  dim ds[N_TYPES];
+
+  template<Type t0, Type t1, typename dim::IntersectionPolicy policy = dim::DEFAULT>
+  bool isBlocking(const model& m, uint& at0, uint& at1) const
   {
-    // 'E' stands for 'existential' quantifier
-    // 'U' stands for 'universal' quantifier
-    // '<' stands for 'membership' predicate
-    eE       , // Ex..Ey (y<x)
-    enE      , // Ex..Ey!(y<x)
-    Ee       , // Ex..Ey (x<y)
-    Ene      , // Ex..Ey!(x<y)
-    ue       ,
-    une      ,
-    eu       ,
-    enu      ,
-    uu       , // Ux..Uy (x<y)
-    unu      , // Ux..Uy!(x<y)
-    N_BLOBS  , // number of blob types
-    // aliases
-    uE  =  ue, // Ex..Uy (y<x)
-    unE = une, // Ex..Uy!(y<x)
-    Eu  =  eu, // Ex..Uy (x<y)
-    Enu = enu, // Ex..Uy!(x<y)
-    eU  =  eu, // Ux..Ey (y<x)
-    enU = enu, // Ux..Ey!(y<x)
-    Ue  =  ue, // Ux..Ey (x<y)
-    Une = une, // Ux..Ey!(x<y)
-  };
-  Blob bs[N_BLOBS];
-
+    return ds[t0].isIntersecting<policy>(m.ds[t1], at0, at1) ||
+           ds[t1].isIntersecting<policy>(m.ds[t0], at0, at1);
+  }
+  template<Type t0, Type t1, typename dim::IntersectionPolicy policy = dim::DEFAULT>
+  bool isContradicting(const model& m, uint& at0, uint& at1) const
+  {
+    return isBlocking<t0, !t1, policy>(m, at0, at1) ||
+           isBlocking<!t0, t1, policy>(m, at0, at1);
+  }
+  template<Type t>
+  bool isContradicting(const model& m, uint& at0, uint& at1) const
+  {
+    return isBlocking<t, !t>(m, at0, at1);
+  }
+  template<Type t0, Type t1>
+  bool isCrossing(const model& m, uint& at0, uint& at1) const
+  {
+    return isContradicting<t0, t1, dim::BY_CROSS>(m, at0, at1);
+  }
+  bool isBefore(const model& m) const
+  {
+    typename dim::Order o = dim::EQU;
+    const dim *d0I = ds, *end = d0I + N_TYPES, *d1I = m.ds;
+    for (; d0I < end && o == dim::EQU; o = d0I->cmp(*d1I), ++d0I, ++d1I);
+    return o == dim::INC;
+  }
 public:
-  typedef Big VariableId;
-  Model // atomic formula (x<y), 'necessarily' referencing current scope
+  model // atomic formula, 'necessarily' referencing current scope
   (
-    const VariableId varId, // index based on current scope, whose ID is 0
-    const bool isMember, // is 'varId' the 'left-hand-side' of the atomic formula
-    const bool isUscope, // is current scope 'universally' quantified
-    const bool isUvar, // is 'varId' an 'universally' quantified variable
-    const bool isNeg // is the atomic formula 'negated', like !(x<y)
+    const uint variable, // index based on current scope, whose ID is 0
+    const bool isMember, // is 'variable' the 'left-hand-side' of the atomic formula
+    const bool isNegScope, // is current scope 'universally' quantified
+    const bool isNegVar, // is 'variable' an 'universally' quantified variable
+    bool isNeg // is the atomic formula 'negated'
   )
   {
-    isUscope ? isUvar ?            bs[isNeg ? unu : uu].set()
-                      : isMember ? bs[isNeg ? Enu : Eu].set(varId)
-                                 : bs[isNeg ? unE : uE].set(varId)
-             : isUvar ? isMember ? bs[isNeg ? Une : Ue].set(0)
-                                 : bs[isNeg ? enU : eU].set(0)
-                      : isMember ? bs[isNeg ? Ene : Ee].set(varId)
-                                 : bs[isNeg ? enE : eE].set(varId);
+    assert(variable && (!isNegScope || !isNegVar));
+    isNeg ^= isNegScope;
+    isNegScope ?   	        isMember ? ds[isNeg ? !V : V] = variable
+                                     : ds[isNeg ? !U : U] = variable
+               : isNegVar ? isMember ? ds[isNeg ? !U : U] = 0
+                                     : ds[isNeg ? !V : V] = 0
+                          : isMember ? ds[isNeg ? !A : A] = variable
+                                     : ds[isNeg ? !S : S] = variable;
   }
-  Model(const Model& m0, const Model& m1) // binary operator
+  model(const model& m0, const model& m1)
   {
-    Blob *bo = bs, *end = bo + N_BLOBS;
-    const Blob *bo0 = m0.bs, *bo1 = m1.bs;
-    for (; bo < end; bo->set(*bo0, *bo1), ++bo, ++bo0, ++bo1);
+    dim *dI = ds, *end = dI + N_TYPES;
+    const dim *d0I = m0.ds, *d1I = m1.ds;
+    for (; dI < end; *dI = dim(*d0I, *d1I), ++dI, ++d0I, ++d1I);
   }
-  bool cmp(const Model& m) const
+  bool isIncompatible(const model& m) const
   {
-    auto order = Blob::EQ;
-    const Blob *bo0 = bs, *end = bo0 + N_BLOBS, *bo1 = m.bs;
-    for (; bo0 < end && order == Blob::EQ; order = bo0->cmp(*bo1), ++bo0, ++bo1);
-    return order == Blob::INC;
+    uint at0, at1;
+    return isCrossing     <M, D>(m, at0, at1) ||
+           isCrossing     <M, V>(m, at0, at1) ||
+           isCrossing     <U, D>(m, at0, at1) ||
+           isCrossing     <U, V>(m, at0, at1) ||
+           
+           isBlocking     <U, V>(m, at0, at1) ||
+           isBlocking     <U, R>(m, at0, at1) ||
+           isBlocking     <U, A>(m, at0, at1) ||
+           isBlocking     <V, B>(m, at0, at1) ||
+           isBlocking     <V, S>(m, at0, at1) ||
+           isBlocking     <S, A>(m, at0, at1) ||
+
+           isContradicting<U   >(m, at0, at1) ||
+           isContradicting<U, B>(m, at0, at1) ||
+           isContradicting<U, S>(m, at0, at1) ||
+           isContradicting<V   >(m, at0, at1) ||
+           isContradicting<V, R>(m, at0, at1) ||
+           isContradicting<V, A>(m, at0, at1) ||
+           isContradicting<S   >(m, at0, at1) ||
+           isContradicting<A   >(m, at0, at1);
   }
-  bool contradicts(const Model& m) const
+  void lift()
   {
-    Big error;
-    return bs[uu].contradicts(m.bs[unu], error) ||
-           bs[uu].contradicts(m.bs[enu], error) ||
-           bs[uu].contradicts(m.bs[une], error) ||
-           bs[uu].contradicts(m.bs[Ene], error) ||
-           bs[uu].contradicts(m.bs[enE], error) ||
-
-           bs[unu].contradicts(m.bs[uu], error) ||
-           bs[unu].contradicts(m.bs[eu], error) ||
-           bs[unu].contradicts(m.bs[ue], error) ||
-           bs[unu].contradicts(m.bs[Ee], error) ||
-           bs[unu].contradicts(m.bs[eE], error) ||
-
-           bs[eu].template contradicts<true>(m.bs[une], error) ||
-           bs[ue].template contradicts<true>(m.bs[enu], error) ||
-
-           bs[enu].template contradicts<true>(m.bs[ue], error) ||
-           bs[une].template contradicts<true>(m.bs[eu], error) ||
-
-           bs[eu].contradicts(m.bs[enE], error) ||
-           bs[eu].contradicts(m.bs[enu], error) ||
-           bs[ue].contradicts(m.bs[Ene], error) ||
-           bs[ue].contradicts(m.bs[une], error) ||
-
-           bs[enu].contradicts(m.bs[eE], error) ||
-           bs[enu].contradicts(m.bs[eu], error) ||
-           bs[une].contradicts(m.bs[Ee], error) ||
-           bs[une].contradicts(m.bs[ue], error) ||
-
-           bs[eE].contradicts(m.bs[enE], error) ||
-           bs[Ee].contradicts(m.bs[Ene], error) ||
-
-           bs[enE].contradicts(m.bs[eE], error) ||
-           bs[Ene].contradicts(m.bs[Ee], error);
+    ds[R] |= ds[A], ds[!R] |= ds[!A], ds[B] |= ds[S], ds[!B] |= ds[!S];
+    ds[A] = ds[!A] = ds[S] = ds[!S] = false;
+    ds[R].shift(), ds[!R].shift(), ds[B].shift(), ds[!B].shift();
+    ds[D] |= ds[V].shift(), ds[!D] |= ds[!V].shift();
+    ds[M] |= ds[U].shift(), ds[!M] |= ds[!U].shift();
   }
-  void close()
-  {
-    for (Blob *b = bs, *end = bs + N_BLOBS; b < end; b->shift(), ++b);
-  }
-  void clear() {for (Blob *b = bs, *end = b + N_BLOBS; b < end; b->clear(), ++b);}
+  friend bool operator<(const model& m0, const model& m1) {return m0.isBefore(m1);}
 };
-template <typename B, typename S>
-const B* Model<B, S>::Blob::NONE = &M_0;
-template <typename B, typename S>
-const B* Model<B, S>::Blob::ALL = &M_1;
-template <typename B, typename S>
-bool operator<(const Model<B, S>& m0, const Model<B, S>& m1) {return m0.cmp(m1);}
 }
 
 #endif
