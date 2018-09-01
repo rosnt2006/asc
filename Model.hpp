@@ -21,7 +21,7 @@ class model
     NEGATION_OFFSET,
     N_TYPES = NEGATION_OFFSET << 1,
   };
-  friend constexpr Type operator!(const Type m) {return m + NEGATION_OFFSET;}
+  friend constexpr Type operator!(Type t) {return static_cast<Type>(t + NEGATION_OFFSET);}
 
   using dim = cloud<uint>;
   dim ds[N_TYPES];
@@ -29,8 +29,8 @@ class model
   template<Type t0, Type t1, typename dim::IntersectionPolicy policy = dim::DEFAULT>
   bool isBlocking(const model& m, uint& at0, uint& at1) const
   {
-    return ds[t0].isIntersecting<policy>(m.ds[t1], at0, at1) ||
-           ds[t1].isIntersecting<policy>(m.ds[t0], at0, at1);
+    return ds[t0].template isIntersecting<policy>(m.ds[t1], at0, at1) ||
+           ds[t1].template isIntersecting<policy>(m.ds[t0], at0, at1);
   }
   template<Type t0, Type t1, typename dim::IntersectionPolicy policy = dim::DEFAULT>
   bool isContradicting(const model& m, uint& at0, uint& at1) const
@@ -50,18 +50,18 @@ class model
   }
   bool isBefore(const model& m) const
   {
-    typename dim::Order o = dim::EQU;
-    const dim *d0I = ds, *end = d0I + N_TYPES, *d1I = m.ds;
+    auto o = dim::EQU;
+    auto *d0I = ds, *end = d0I + N_TYPES, *d1I = m.ds;
     for (; d0I < end && o == dim::EQU; o = d0I->cmp(*d1I), ++d0I, ++d1I);
     return o == dim::INC;
   }
 public:
   model // atomic formula, 'necessarily' referencing current scope
   (
-    const uint variable, // index based on current scope, whose ID is 0
-    const bool isMember, // is 'variable' the 'left-hand-side' of the atomic formula
-    const bool isNegScope, // is current scope 'universally' quantified
-    const bool isNegVar, // is 'variable' an 'universally' quantified variable
+    uint variable, // index based on current scope, whose ID is 0
+    bool isMember, // is 'variable' the 'left-hand-side' of the atomic formula
+    bool isNegScope, // is current scope 'universally' quantified
+    bool isNegVar, // is 'variable' an 'universally' quantified variable
     bool isNeg // is the atomic formula 'negated'
   )
   {
@@ -69,16 +69,16 @@ public:
     isNeg ^= isNegScope;
     isNegScope ?   	        isMember ? ds[isNeg ? !V : V] = variable
                                      : ds[isNeg ? !U : U] = variable
-               : isNegVar ? isMember ? ds[isNeg ? !U : U] = 0
-                                     : ds[isNeg ? !V : V] = 0
+               : isNegVar ? isMember ? ds[isNeg ? !U : U] = uint(0)
+                                     : ds[isNeg ? !V : V] = uint(0)
                           : isMember ? ds[isNeg ? !A : A] = variable
                                      : ds[isNeg ? !S : S] = variable;
   }
   model(const model& m0, const model& m1)
   {
-    dim *dI = ds, *end = dI + N_TYPES;
-    const dim *d0I = m0.ds, *d1I = m1.ds;
-    for (; dI < end; *dI = dim(*d0I, *d1I), ++dI, ++d0I, ++d1I);
+    auto *dI = ds, *end = dI + N_TYPES;
+    auto *d0I = m0.ds, *d1I = m1.ds;
+    for (; dI < end; *dI = *d0I | *d1I, ++dI, ++d0I, ++d1I);
   }
   bool isIncompatible(const model& m) const
   {

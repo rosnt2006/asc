@@ -8,37 +8,36 @@
 #include <map>
 #include <mutex>
 #include <set>
-#include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
 namespace xc
 {
+struct exception {virtual ~exception() {}};
+struct indefinition : exception {};
+struct circularity : exception {};
+struct collapse : exception {};
+
 template <typename uint, uint N_WORKERS>
 class calculator
 {
-  using conjunction = model<uint>;
-  using expression = std::set<conjunction>;
-  template<typename...As>
-  static auto newExpr(As...as) {return new expression(std::forward<As>(as)...);}
-  std::shared_ptr<expression> result{newExpr()};
-  std::vector<decltype(result)> exprs;
-  std::vector<uint> ops = {0, 0};
-  std::vector<bool> vars = {false};
-  std::map<std::string, uint> symbols;
-  std::vector<typename decltype(symbols)::value_type> context;
-  struct depth {uint var, op;};
-  struct depthHash
+  std::set<model<uint>> result;
+  std::vector<std::shared_ptr<decltype(result)>> exprs;
+  std::vector<uint> ops{0, 0};
+  std::vector<bool> vars{false};
+  struct depth
   {
-    uint operator()(const depth& d) const
+    uint var, op;
+    bool operator==(const depth& d) const {return var == d.var && op == d.op;}
+    auto operator()(const depth& d) const
     {
       static const uint HALF_WIDTH = std::numeric_limits<uint>::digits >> 1;
       return d.var ^ (d.op << HALF_WIDTH | d.op >> HALF_WIDTH);
     }
   };
-  std::unordered_map<depth, uint, depthHash> checks;
-  uint idleWorkers = N_WORKERS;
+  std::unordered_map<depth, const exception*, depth> checks;
+  uint idleWorkers{N_WORKERS};
   std::condition_variable barrier;
   std::mutex mutex;
 
@@ -52,26 +51,26 @@ class calculator
     }
     std::thread(std::forward<Task>(t)).detach();
   }
-  void combine(const conjunction& c0, const conjunction& c1)
+  void combine(const model<uint>& m0, const model<uint>& m1)
   {
-    if (!c0.isIncompatible(c1))
+    if (!m0.isIncompatible(m1))
     {
-      conjunction c(c0, c1);
+      model<uint> m(m0, m1);
       {
         std::unique_lock<std::mutex> l(mutex);
-        result->emplace(std::move(c));
+        result.emplace(std::move(m));
         ++idleWorkers;
       }
       barrier.notify_all();
     }
   }
-  void lift(const conjunction& cc)
+  void lift(const model<uint>& cm)
   {
-    auto& c = const_cast<conjunction&>(cc);
-    c.lift();
+    auto& m = const_cast<model<uint>&>(cm);
+    m.lift();
     {
       std::unique_lock<std::mutex> l(mutex);
-      result->emplace(std::move(c));
+      result.emplace(std::move(m));
       ++idleWorkers;
     }
     barrier.notify_all();
@@ -81,36 +80,25 @@ class calculator
     std::unique_lock<std::mutex> l(mutex);
     barrier.wait(l, [&]{return idleWorkers == N_WORKERS;});
   }
-  void save(const std::string& symbol)
-  {
-    auto sIt = symbols.emplace(symbol, 0);
-    context.emplace_back(symbol, sIt.second ? 0 : *sIt.first);
-    *sIt.first = nVars();
-  }
-  void restore()
-  {
-    auto& alias = context.back();
-    if (alias.second) symbols[alias.first] = alias.second;
-    else symbols.erase(alias.first);
-    context.pop_back();
-  }
   uint nVars() const {return vars.size();}
-  uint& nOps() {return ops.back();}
+  auto& nOps() const {return ops.back();}
   depth getDepth() const {return {nVars(), nOps()};}
   enum Negation {DEFAULT, SYN, SEM};
   template<Negation n = DEFAULT>
   bool isNeg() const {return n == SYN ? 1 & nOps() :
                              n == SEM ? vars.back() :
                                         isNeg<SYN>() ^ isNeg<SEM>();}
+  auto& nOps() {return ops.back();}
   void pop() {exprs.pop_back();}
-  auto& top() {return *exprs.back();}
+  auto& topPtr() {return exprs.back();}
+  auto& top() {return *topPtr();}
   auto& subTop() {return **(exprs.end() - 2);}
   void take()
   {
-    top().clear(), top().swap(*result);
+    top().clear(), top().swap(result);
     auto cIt = checks.find(getDepth());
     if (cIt == checks.end()) return;
-    if (top().empty()) throw pop(), cIt->second;
+    if (top().empty()) pop(), throw *cIt->second;
     checks.erase(cIt);
   }
   void resolve()
@@ -130,45 +118,48 @@ class calculator
       for (; !nOps() && nVars() > 1 && !exprs.empty(); isDone = false)
       {
         for (auto& c : top()) process([&]{lift(c);});
-        joinWorkers(), take(), ops.pop_back(), vars.pop_back(), restore();
+        joinWorkers(), take(), ops.pop_back(), vars.pop_back();
       }
     }
   }
-  void push(const uint nOperators = 1) {nOps() += nOperators;}
-  void push(const std::string& symbol)
+  template<typename Expr> void push(Expr e) {exprs.emplace_back(e), resolve();}
+public: using var = uint; private:
+  template<bool isMember>
+  void bind(const var v)
   {
-    vars.emplace_back(isNeg()), save(symbol), ops.emplace_back(0);
+    assert(v);
+    if (v > nVars()) throw indefinition{};
+    if (v == nVars()) throw circularity{};
+    bool isNegScope = isNeg<SEM>();
+    bool isNegVar = vars[v - 1];
+    if (isNegScope && isNegVar) throw collapse{};
+    auto expr = std::make_shared<decltype(result)>();
+    expr->emplace(nVars() - v, isMember, isNegScope, isNegVar, isNeg<SYN>());
+    push(expr);
   }
-  template<typename Expression> void push(Expression e) {exprs.emplace_back(e), resolve();}
+  var newVar() {return vars.emplace_back(isNeg()), ops.emplace_back(0), nVars();}
 public:
-  void atom(const std::string& symbol, const bool isMember)
-  {
-    auto symbIt = symbols.find(symbol);
-    if (symbIt == symbols.end()) throw symbol + " is undefined";
-    const uint var = symbIt->second;
-    if (var == nVars()) throw symbol + " is impredicative";
-    assert(var && var < nVars());
-    const bool isNegScope = isNeg<SEM>();
-    const bool isNegVar = vars[var - 1];
-    if (isNegScope && isNegVar) throw symbol + " colapsed";
-    push(newExpr({{nVars() - var, isMember, isNegScope, isNegVar, isNeg<SYN>()}}));
-  }
+  void check(const exception& error) {checks[getDepth()] = &error;}
+  friend void operator<(calculator& c, const var v) {c.bind<false>(v);}
+  friend void operator>(const var v, calculator& c) {c<v;}
+  friend void operator<(const var v, calculator& c) {c.bind<true>(v);}
+  friend void operator>(calculator& c, const var v) {v<c;}
   using expr = std::function<void()>;
-  void opNor(const expr& e0, const expr& e1) {push(), e0(), e1();}
-  void opNot(const expr& e) {opNor(e, [this]{push(top());});}
+  void opNor(const expr& e0, const expr& e1) {++nOps(), e0(), e1();}
+  void opNot(const expr& e) {opNor(e, [this]{push(topPtr());});}
   void opOr(const expr& e0, const expr& e1) {opNot([&]{opNor(e0, e1);});}
   void opAnd(const expr& e0, const expr& e1) {opNor([&]{opNot(e0);}, [&]{opNot(e1);});}
   void opNand(const expr& e0, const expr& e1) {opNot([&]{opAnd(e0, e1);});}
-  void opImp(const expr& e0, const expr& e1) {opOr(opNot(e0), e1);}
+  void opImp(const expr& e0, const expr& e1) {opOr([&]{opNot(e0);}, e1);}
   void opBimp(const expr& e0, const expr& e1)
   {
-    push(3), e0(), e1();
-    auto nor = top();
-    e0(), push(), e1(), push(nor);
+    nOps() += 3, e0(), e1();
+    auto nor = topPtr();
+    e0(), ++nOps(), e1(), push(nor);
   }
-  void exists(const std::string& symbol, const expr& e) {push(symbol), e();}
-  void forAll(const std::string& symbol, const expr& e) {opNot([&]{exists(symbol, e);});}
-  void check(const uint error) {checks[getDepth()] = error;}
+  using predicate = std::function<void(var)>;
+  void exists(const predicate& p) {p(newVar());}
+  void forAll(const predicate& p) {opNot([&]{exists([&](var v){opNot([&]{p(v);});});});}
 };
 }
 
